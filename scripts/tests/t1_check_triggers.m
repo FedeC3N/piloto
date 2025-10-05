@@ -22,6 +22,7 @@ config.path.conductual = fullfile('..','..','data','conductual');
 
 % Find the subjects based on the EEG
 files = dir(sprintf('%s/*WM*.cnt',config.path.eeg));
+% files = dir(sprintf('%s/*prueba_64ch*.cnt',config.path.eeg));
 files = {files.name};
 
 for ifile = 1 : numel(files)
@@ -29,6 +30,7 @@ for ifile = 1 : numel(files)
     % Get the current subject code
     current_subject = files{ifile};
     current_subject = current_subject(1:9);
+%     current_subject = current_subject(1:19);
     fprintf('Working on subject %s\n\n', current_subject)
     
     % Load the triggers in conductual data
@@ -41,7 +43,7 @@ for ifile = 1 : numel(files)
     conductual_triggers = conductual.stim.triggers;
     
     % Load the EEG events and the header
-    eeg_dataset = dir(sprintf('%s/%s*WM*.cnt',config.path.eeg,current_subject));
+    eeg_dataset = dir(sprintf('%s/%s',config.path.eeg,files{ifile}));
     current_eeg_file = sprintf('%s/%s',eeg_dataset.folder,eeg_dataset.name);
     eeg_triggers = ft_read_event(current_eeg_file);
     header = ft_read_header(current_eeg_file);
