@@ -15,7 +15,7 @@ config.path.raw  = fullfile('..','..','data','eeg','raw');
 config.path.metadata = fullfile('..','..','data','eeg','metadata');
 
 % Action when the task have already been processed.
-config.overwrite      = true;
+config.overwrite      = false;
 
 % Sets the visualization configuration parameters.
 config.trialfun       = 'restingSegmentation';

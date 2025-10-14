@@ -51,19 +51,17 @@ function s6_selectICsAndTrials_OpeningFcn ( hObject, eventdata, handles, varargi
 
 clc
 
-% Adds the functions folders to the path.
-addpath ( '../SharedFunctions/fieldtrip-20220626/');
-addpath ( '../SharedFunctions/functions/');
+% Adds the functions folders to PATH.
+addpath(fullfile('..','SharedFunctions','functions'));
+addpath(fullfile('..','SharedFunctions','mne_silent'));
+addpath(fullfile('..','SharedFunctions','functions_eep'));
+addpath(fullfile('..','SharedFunctions','fieldtrip-20250928'));
 ft_defaults
-
-% Select user
-fid = fopen('./user.txt','r');
-user = fgetl(fid);
-fclose(fid);
+clc
 
 % Paths
-config.path.raw  = '../../databases/AI_Mind_database';
-config.path.derivatives = sprintf('../../databases/AI_Mind_database/derivatives/%s',user);
+config.path.raw  = fullfile('..','..','data','eeg','raw');
+config.path.metadata = fullfile('..','..','data','eeg','metadata');
 
 % Sets the configuration parameters.
 config.timeband       = [  2 30 ];
@@ -85,22 +83,9 @@ set ( handles.popupTrialType, 'String', config.trialtypes );
 
 
 % Filter the files corresponding to this dataset
-dataset_file = sprintf('%s/dataset_%s.mat',config.path.derivatives,user);
-dataset    = struct2array ( load ( dataset_file ) );
-filenames = cell(numel(dataset),1); 
-folders = cell(numel(dataset),1); 
-for ifile = 1:numel(dataset)
-    filenames{ifile} = sprintf('sub-%s_ses-%s_task-%s_desc-sketch_eeg.mat',dataset(ifile).subject,...
-        dataset(ifile).session,dataset(ifile).task);
-    
-    folders{ifile} = sprintf('%s/sub-%s/ses-%s/eeg',...
-        config.path.derivatives,  dataset(ifile).subject,...
-        dataset(ifile).session);
-    
-end  
-
-handles.data.folder   = folders;
-handles.data.filename = filenames;
+dataset_file = fullfile('..','..','data','eeg','dataset.mat');
+dataset = load ( dataset_file );
+handles.dataset = dataset.dataset;
 handles.data.current  = 1;
 
 
@@ -267,7 +252,7 @@ show ( handles )
 
 
 function buttonNext_Callback            ( hObject, eventdata, handles )
-if handles.data.current < numel ( handles.data.filename )
+if handles.data.current < numel ( handles.dataset )
     handles.data.current = handles.data.current + 1;
 end
 
@@ -295,36 +280,36 @@ set ( handles.toggleEMG,    'Enable', 'off' )
 set ( handles.uitoggleTF,   'Enable', 'off' )
 drawnow
 
-% Gets the subject's data.
-files     = numel ( handles.data.filename );
-current   = handles.data.current;
-
-% Loads data for the current subject.
-filename  = handles.data.filename { current };
-filename  = sprintf ( '%s/%s', handles.data.folder{current}, filename );
-
-taskdata  = load ( filename );
+% Load the current metadata
+current_folder = handles.dataset(handles.data.current).folder;
+current_file =handles.dataset(handles.data.current).file;
+current_subject = handles.dataset(handles.data.current).subject;
+current_session = handles.dataset(handles.data.current).session;
+current_task = handles.dataset(handles.data.current).task;
+filename = sprintf ('%s_%s_%s_metadata.mat',  ...
+    current_subject, current_session, current_task );
+metadata_file   = fullfile(handles.config.path.metadata,filename);
+metadata  = load ( metadata_file );
 
 
 % If no last time saved, initializes the date field.
-if ~isfield ( taskdata, 'updated' ), taskdata.updated = 'No yet saved'; end
+if ~isfield ( metadata.groupinfo.EEG, 'updated' ), metadata.groupinfo.EEG.updated = 'No yet saved'; end
 
-subject   = taskdata.subject;
-task      = taskdata.task;
-stage     = taskdata.stage;
-channel   = taskdata.channel;
-fileinfo  = taskdata.fileinfo;
-trialinfo = taskdata.trialinfo;
-compinfo  = taskdata.compinfo;
-cleaninfo = taskdata.cleaninfo;
-trialdata = taskdata.freqdata;
-updated   = taskdata.updated;
+subject   = metadata.subject;
+task      = metadata.task;
+channel   = 'EEG';
+fileinfo  = metadata.fileinfo;
+compinfo  = metadata.compinfo;
+trialinfo = metadata.groupinfo.EEG.trialinfo;
+cleaninfo = metadata.groupinfo.EEG.cleaninfo;
+trialdata = metadata.groupinfo.EEG.freqdata;
+updated   = metadata.groupinfo.EEG.updated;
 
 % Gets the IC components info.
-subject   = taskdata.subject;
+subject   = metadata.subject;
 compdata  = compinfo.SOBI;
-mixing    = compdata.mixing;
-topolabel = compdata.topolabel;
+mixing    = compdata.EEG.mixing;
+topolabel = compdata.EEG.topolabel;
 
 
 % Initializes the IC and trial types, if not existent.
@@ -360,16 +345,16 @@ EMGidx    = find ( EMGidx, 1, 'first' );
 
 
 % Extracts both the ERF and the spectrum from the data.
-data      = cat ( 3, taskdata.erfdata.trial {:} );
-time      = taskdata.erfdata.time {1};
+data      = cat ( 3, metadata.groupinfo.EEG.erfdata.trial {:} );
+time      = metadata.groupinfo.EEG.erfdata.time {1};
 
 MEGtdata  = data     ( MEGidx, :, : );
 EOGtdata  = data     ( EOGidx, :, : );
 EKGtdata  = data     ( EKGidx, :, : );
 EMGtdata  = data     ( EMGidx, :, : );
 
-data      = permute ( taskdata.freqdata.fourierspctrm, [ 2 3 1 ] );
-freq      = taskdata.freqdata.freq;
+data      = permute ( metadata.groupinfo.EEG.freqdata.fourierspctrm, [ 2 3 1 ] );
+freq      = metadata.groupinfo.EEG.freqdata.freq;
 
 MEGfdata  = data     ( MEGidx, :, : );
 EOGfdata  = data     ( EOGidx, :, : );
@@ -383,7 +368,7 @@ EKGtdata  = bsxfun ( @minus, EKGtdata, mean ( EKGtdata, 2 ) );
 EMGtdata  = bsxfun ( @minus, EMGtdata, mean ( EMGtdata, 2 ) );
 
 % Extracts the metadata.
-trials    = numel ( taskdata.erfdata.trial );
+trials    = numel ( metadata.groupinfo.EEG.erfdata.trial );
 channels  = sum  ( MEGidx );
 
 
@@ -405,7 +390,6 @@ handles.current.topolabel   = topolabel;
 handles.current.mixing      = mixing;
 handles.current.subject     = subject;
 handles.current.task        = task;
-handles.current.stage       = stage;
 handles.current.channel     = channel;
 handles.current.updated     = updated;
 
@@ -418,8 +402,8 @@ set ( handles.popupTrial, 'String', labels.trials, 'Value', 1 )
 
 % Enables the subject navigation buttons.
 set ( handles.uibuttonSave, 'Enable', 'on' );
-if current > 1,     set ( handles.buttonPrev, 'Enable', 'on' ), end
-if current < files, set ( handles.buttonNext, 'Enable', 'on' ), end
+if handles.data.current > 1,     set ( handles.buttonPrev, 'Enable', 'on' ), end
+if handles.data.current < numel(handles.dataset), set ( handles.buttonNext, 'Enable', 'on' ), end
 
 % Enables the EOG, EKG and EMG buttons.
 if any ( EOGidx ), set ( handles.toggleEOG,   'Enable', 'on' ), end
@@ -844,15 +828,14 @@ function updateInfo ( handles )
 % Gets the current file information.
 subject     = handles.current.subject;
 task        = handles.current.task;
-stage       = handles.current.stage;
 channel     = handles.current.channel;
 updated     = handles.current.updated;
 
 % Gets the global information.
 index       = handles.data.current;
-files       = numel ( handles.data.filename );
-folder      = fullpath ( handles.data.folder{index} );
-filename    = handles.data.filename { handles.data.current };
+files       = numel ( handles.dataset);
+folder      = fullpath ( handles.dataset(index).folder );
+filename    = handles.dataset(index).file;
 
 % Gets the clean trial and ICs information.
 ICs         = numel ( handles.current.comptype  );
@@ -861,11 +844,7 @@ cleanICs    = sum ( handles.current.comptype  == 0 );
 cleantrials = sum ( handles.current.trialtype == 0 );
 
 % Updates the information text.
-if ~isempty ( stage )
-    handles.current.info {1} = sprintf ( 'Subject ''%s'', task ''%s'', stage ''%s'', channel group ''%s'' (file %i of a total of %i).', subject, task, stage, channel, index, files );
-else
-    handles.current.info {1} = sprintf ( 'Subject ''%s'', task ''%s'', channel group ''%s'' (file %i of a total of %i).', subject, task, channel, index, files );
-end
+handles.current.info {1} = sprintf ( 'Subject ''%s'', task ''%s'', channel group ''%s'' (file %i of a total of %i).', subject, task, channel, index, files );
 handles.current.info {2} = sprintf ( 'Full route to file: %s%s.', folder, filename );
 handles.current.info {3} = sprintf ( 'Last time saved: %s.', updated );
 handles.current.info {4} = sprintf ( '%.0f of %.0f trials. %.0f of %.0f independent components.', cleantrials, trials, cleanICs, ICs );
@@ -884,18 +863,19 @@ set ( handles.buttonNext,   'Enable', 'off' );
 set ( handles.uibuttonSave, 'Enable', 'off' );
 drawnow
 
-% Gets information on the files.
-current                = handles.data.current;
-folder                 = handles.data.folder{current};
-files                  = handles.data.filename;
-
-
-% Loads the old data from the file.
-filename               = sprintf ( '%s/%s', folder, files { current } );
-taskdata               = load ( filename );
+% Load the current metadata
+current_folder = handles.dataset(handles.data.current).folder;
+current_file = handles.dataset(handles.data.current).file;
+current_subject = handles.dataset(handles.data.current).subject;
+current_session = handles.dataset(handles.data.current).session;
+current_task = handles.dataset(handles.data.current).task;
+filename = sprintf ('%s_%s_%s_metadata.mat',  ...
+    current_subject, current_session, current_task );
+metadata_file   = fullfile(handles.config.path.metadata,filename);
+metadata  = load ( metadata_file );
 
 % Stores the new trial and component types.
-cleaninfo              = taskdata.cleaninfo;
+cleaninfo              = metadata.groupinfo.EEG.cleaninfo;
 cleaninfo.trial.types  = handles.config. trialtypes;
 cleaninfo.trial.type   = handles.current.trialtype;
 cleaninfo.comp. types  = handles.config. comptypes;
@@ -905,17 +885,10 @@ cleaninfo.comp. type   = handles.current.comptype;
 updated                = datestr ( now );
 
 % Saves the new data.
-taskdata.cleaninfo     = cleaninfo;
-taskdata.updated       = updated;
+metadata.groupinfo.EEG.cleaninfo     = cleaninfo;
+metadata.groupinfo.EEG.updated       = updated;
 
-% Measure time and memory
-tEnd = toc(handles.tStart);
-user = memory;
-current_step = 'select_badchannels';
-taskdata.times_seconds.(current_step) = tEnd;
-taskdata.memory_bytes.(current_step) = user.MemUsedMATLAB;
-
-save ( '-v6', filename, '-struct', 'taskdata' )
+save ( '-v6', metadata_file, '-struct', 'metadata' )
 
 % Updates the date in the handles structure.
 handles.current.updated = updated;
@@ -926,10 +899,10 @@ updateInfo ( handles )
 
 % Enables the subject navigation buttons.
 set ( handles.uibuttonSave, 'Enable', 'on' );
-if current > 1
+if handles.data.current > 1
     set ( handles.buttonPrev, 'Enable', 'on' );
 end
-if current < numel ( files )
+if handles.data.current < numel ( handles.dataset )
     set ( handles.buttonNext, 'Enable', 'on' );
 end
 drawnow

@@ -2,24 +2,20 @@ clc
 clear
 close all
 
-% Adds the functions folders to the path.
-addpath ( '../SharedFunctions/fieldtrip-20220626/');
-addpath ( '../SharedFunctions/functions/');
-addpath ( '../SharedFunctions/mne_silent/');
-addpath ( '../SharedFunctions/functions_eep/');
+% Adds the functions folders to PATH.
+addpath(fullfile('..','SharedFunctions','functions'));
+addpath(fullfile('..','SharedFunctions','mne_silent'));
+addpath(fullfile('..','SharedFunctions','functions_eep'));
+addpath(fullfile('..','SharedFunctions','fieldtrip-20250928'));
 ft_defaults
-
-% Select user
-fid = fopen('./user.txt','r');
-user = fgetl(fid);
-fclose(fid);
+clc
 
 % Paths
-config.path.raw  = '../../databases/AI_Mind_database';
-config.path.derivatives = sprintf('../../databases/AI_Mind_database/derivatives/%s',user);
+config.path.raw  = fullfile('..','..','data','eeg','raw');
+config.path.metadata = fullfile('..','..','data','eeg','metadata');
 
 % Action when the task have already been processed.
-config.overwrite      = false;
+config.overwrite      = true;
 
 % Sets the segmentation options.
 config.trialfun       = 'restingSegmentation';
@@ -33,33 +29,39 @@ config.freqband       = [ 2 45 ];
 config.channel.groups = { 'EEG' };
 config.channel.ignore = {};
 
-% Lists the files.
-dataset_file = sprintf('%s/dataset_%s.mat',config.path.derivatives,user);
-dataset    = struct2array ( load ( dataset_file ) );
-
+% Load the metadata
+dataset_file = fullfile('..','..','data','eeg','dataset.mat');
+load ( dataset_file );
 % Goes through each subject and task.
-for sindex = 1: numel ( dataset )
+for findex = 1: numel ( dataset )
     
     % Read the metadata
-    current_folder = dataset(sindex).folder;
-    current_file = dataset(sindex).file;
-    current_subject = dataset(sindex).subject;
-    current_session = dataset(sindex).session;
-    current_task = dataset(sindex).task;
+    current_folder = dataset(findex).folder;
+    current_file = dataset(findex).file;
+    current_subject = dataset(findex).subject;
+    current_session = dataset(findex).session;
+    current_task = dataset(findex).task;
     fprintf('Current file sub-%s_ses-%s_task-%s\n', current_subject,current_session,current_task);
     
     % Check if exist metadata file (mandatory)
-    current_path_trl = sprintf('%s/sub-%s/ses-%s/eeg',...
-            config.path.derivatives,current_subject,current_session);
-    metadata_file   =  sprintf ( '%s/sub-%s_ses-%s_task-%s_desc-trl_eeg.mat', current_path_trl, ...
+    filename = sprintf ('%s_%s_%s_metadata.mat',  ...
         current_subject, current_session, current_task );
+    metadata_file   = fullfile(config.path.metadata,filename);
     if ~exist(metadata_file)
         fprintf('Metadata file not created. Skip \n\n');
     end
     
     % Load metadata
     metadata = load (metadata_file);
-    dummy_path_current_file = sprintf('%s/%s',current_folder,current_file);
+    dummy_path_current_file = fullfile(current_folder,current_file);
+    
+    % Check if overwrite
+    already_processed = strcmp(metadata.history.previous_steps,'Sketch Extraction');
+    already_processed = sum(already_processed) > 0;
+    if already_processed && ~config.overwrite
+        fprintf('  Already processed. Do not overwrite\n\n');
+        continue
+    end
     
     % Checks that the selected channel group is present in the SOBI data.
     if ~any ( ismember ( config.channel.groups, fieldnames ( metadata.compinfo.SOBI ) ) )
@@ -67,17 +69,9 @@ for sindex = 1: numel ( dataset )
         continue
     end
     
-    % Check if overwrite
-    outname             = sprintf ( '%s/sub-%s_ses-%s_task-%s_desc-sketch_eeg.mat', current_path_trl, metadata.subject, metadata.session, metadata.task ); 
-    if exist ( outname, 'file' ) && ~config.overwrite
-        fprintf ( 1, '  Already calculated).\n');
-        continue
-    end
-    
     % Gets the files length as a vector.
     headers             = [ metadata.fileinfo.header ];
     samples             = [ headers.nSamples ];
-    offsets             = cat ( 2, 0, cumsum ( samples) );
     
     % Reserves memory for the trialdata.
     trialdefs           = cell ( numel ( metadata.fileinfo ), 1 );
@@ -86,179 +80,99 @@ for sindex = 1: numel ( dataset )
     trialtypes          = cell ( numel ( metadata.fileinfo ), 1 );
     erfdatas            = cell ( numel ( metadata.fileinfo ), 1 );
     freqdatas           = cell ( numel ( metadata.fileinfo ), 1 );
+        
+    % Loads the current epochs and artifact definitions.
+    fileinfo             = metadata.fileinfo ;
+    artinfo              = metadata.artinfo;
     
-    % Goes through all the data files.
-    for findex = 1: numel ( metadata.fileinfo )
-        
-        % Loads the current epochs and artifact definitions.
-        fileinfo             = metadata.fileinfo ( findex );
-        artinfo              = metadata.artinfo  ( findex );
-        dummy_path_current_file = sprintf('%s/%s',current_folder,fileinfo.file);
-
-        
-        if ~exist ( dummy_path_current_file, 'file' )
-            fprintf ( 1, '  Ignoring trial definition for file %i (%s file not found).\n', findex, basename );
-            continue
-        end
-        
-        
-        fprintf ( 1, '    Reading data from disk.\n' );
-        
-        % Gets the MEG data.
-        cfg                   = [];
-        cfg.dataset           = dummy_path_current_file;
-        cfg.header            = fileinfo.header;
-        
-        wholedata             = my_read_data ( cfg );
-        
-        % Selects the channels.
-        cfg                  = [];
-        badchannels          = strcat('-',metadata.chaninfo.bad);
-        desired_channel      = cat(2,{'eeg'},badchannels);
-        cfg.channel          = desired_channel;
-        cfg.precision        = 'single';
-        cfg.feedback         = 'no';
-        
-        wholedata            = ft_preprocessing ( cfg, wholedata );
-        
-        
-        fprintf ( 1, '    Generating the trial definition. ' );
-        
-        % Extracts the trials.
-        trialfun              = str2func ( config.trialfun );
-        
-        fileconfig            = config;
-        fileconfig.dataset    = dummy_path_current_file;
-        fileconfig.header     = fileinfo.header;
-        fileconfig.event      = fileinfo.event;
-        fileconfig.begtime    = fileinfo.begtime;
-        fileconfig.endtime    = fileinfo.endtime;
-        fileconfig.artifact   = artinfo.artifact;
-        fileconfig.feedback   = 'no';
-        
-        trialdef              = trialfun ( fileconfig );
-        
-        % If no trials ignores the file.
-        if isempty ( trialdef )
-            fprintf ( 1, 'No trials detected. Skipping file.\n' );
-            continue
-        end
-        
-        % Initializes the file configuration structure.
-        fileconfig            = config;
-        
-        fprintf ( 1, '%i trials found.\n', size ( trialdef, 1 ) );
-        
-        
-        % Gets the defined trials.
-        fileconfig.feedback   = 'no';
-        fileconfig.trl        = trialdef;
-        
-        freqdata              = ft_redefinetrial ( fileconfig, wholedata );
-        clear wholedata
-        
-        
-        % Creates a dummy structure with no data.
-        erfdata               = freqdata;
-        erfdata.trial         = cellfun ( @(x) zeros ( cat ( 2, size ( x ), 0 ) ), erfdata.trial, 'UniformOutput', false );
-        erfdata.trialdimord   = '{rpt}_chan_time';
-        
-        % Removes the 'cfg' field.
-        erfdata               = rmfield ( erfdata,  'cfg' );
-        
-        
-        % Calculates the spectra of the data.
-        cfg                   = [];
-        cfg.method            = 'mtmfft';
-        cfg.taper             = 'hamming';
-        cfg.output            = 'fourier';
-        cfg.foilim            = config.freqband;
-        cfg.keeptrials        = 'yes';
-        cfg.feedback          = 'no';
-        
-        freqdata              = ft_freqanalysis ( cfg, freqdata );
-        
-        % Removes the 'cfg' field.
-        freqdata              = rmfield ( freqdata,  'cfg' );
-        
-        % Rewrites the data as 'single' to save space.
-        freqdata.fourierspctrm = single ( freqdata.fourierspctrm );
-        
-        
-        % Marks the artifacted trials.
-        
-        
-        % Writes the trial's metadata.
-        trialtype             = zeros ( numel ( erfdata.trial ), 1 );
-        trialpad              = zeros ( numel ( erfdata.trial ), 1 );
-        trialfile             = repmat ( findex,   numel ( erfdata.trial ), 1 );
-        
-        
-        % Stores the epoch data.
-        trialdefs  { findex } = trialdef;
-        trialfiles { findex } = trialfile;
-        trialpads  { findex } = trialpad;
-        trialtypes { findex } = trialtype;
-        erfdatas   { findex } = erfdata;
-        freqdatas  { findex } = freqdata;
-        
-        clear erfdata
-        clear freqdata
-    end
+    fprintf ( 1, '    Reading data from disk.\n' );
     
-    % Removes the empty files.
-    empty                 = cellfun ( @isempty, erfdatas );
+    % Gets the MEG data.
+    cfg                   = [];
+    cfg.dataset           = dummy_path_current_file;
+    cfg.header            = fileinfo.header;
     
-    erfdatas   ( empty )  = [];
-    freqdatas  ( empty )  = [];
+    wholedata             = my_read_data ( cfg );
     
-    trialdefs  ( empty )  = [];
-    trialfiles ( empty )  = [];
-    trialpads  ( empty )  = [];
-    trialtypes ( empty )  = [];
+    % Selects the channels.
+    cfg                  = [];
+    badchannels          = strcat('-',metadata.chaninfo.bad);
+    desired_channel      = cat(2,{'eeg'},badchannels);
+    cfg.channel          = desired_channel;
+    cfg.precision        = 'single';
+    cfg.feedback         = 'no';
     
-    trialdef              = cat ( 1, trialdefs  {:} );
-    trialfile             = cat ( 1, trialfiles {:} );
-    trialpad              = cat ( 1, trialpads  {:} );
-    trialtype             = cat ( 1, trialtypes {:} );
-    
-    clear trialdefs
-    clear trialfiles
-    clear trialpads
-    clear trialtypes
+    wholedata            = ft_preprocessing ( cfg, wholedata );
     
     
-    if isempty ( erfdatas )
-        fprintf ( 1, '  No data for subject ''%s'' task ''%s''. Skipping.\n', metadata.subject, metadata.task );
+    fprintf ( 1, '    Generating the trial definition. ' );
+    
+    % Extracts the trials.
+    trialfun              = str2func ( config.trialfun );
+    
+    fileconfig            = config;
+    fileconfig.dataset    = dummy_path_current_file;
+    fileconfig.header     = fileinfo.header;
+    fileconfig.event      = fileinfo.event;
+    fileconfig.begtime    = fileinfo.begtime;
+    fileconfig.endtime    = fileinfo.endtime;
+    fileconfig.artifact   = artinfo.artifact;
+    fileconfig.feedback   = 'no';
+    
+    trialdef              = trialfun ( fileconfig );
+    
+    % If no trials ignores the file.
+    if isempty ( trialdef )
+        fprintf ( 1, 'No trials detected. Skipping file.\n' );
         continue
     end
     
-    fprintf ( 1, '  Merging all the data files.\n' );
+    % Initializes the file configuration structure.
+    fileconfig            = config;
     
-    % Merges the epoch data.
-    if numel ( erfdatas ) > 1
-        
-        % Merges the ERF.
-        cfg           = [];
-        
-        erfdata       = myft_appenddata ( cfg, erfdatas  {:} );
-        
-        % Merges the frequency data.
-        cfg.parameter = 'fourierspctrm';
-        
-        freqdata      = ft_appendfreq ( cfg, freqdatas {:} );
-        
-        % Removes the 'cfg' field.
-        freqdata      = rmfield ( freqdata,  'cfg' );
-    else
-        
-        erfdata       = erfdatas   {1};
-        freqdata      = freqdatas  {1};
-    end
-    clear erfdatas
-    clear freqdatas
+    fprintf ( 1, '%i trials found.\n', size ( trialdef, 1 ) );
     
     
+    % Gets the defined trials.
+    fileconfig.feedback   = 'no';
+    fileconfig.trl        = trialdef;
+    
+    freqdata              = ft_redefinetrial ( fileconfig, wholedata );
+    clear wholedata
+    
+    
+    % Creates a dummy structure with no data.
+    erfdata               = freqdata;
+    erfdata.trial         = cellfun ( @(x) zeros ( cat ( 2, size ( x ), 0 ) ), erfdata.trial, 'UniformOutput', false );
+    erfdata.trialdimord   = '{rpt}_chan_time';
+    
+    % Removes the 'cfg' field.
+    erfdata               = rmfield ( erfdata,  'cfg' );
+    
+    
+    % Calculates the spectra of the data.
+    cfg                   = [];
+    cfg.method            = 'mtmfft';
+    cfg.taper             = 'hamming';
+    cfg.output            = 'fourier';
+    cfg.foilim            = config.freqband;
+    cfg.keeptrials        = 'yes';
+    cfg.feedback          = 'no';
+    
+    freqdata              = ft_freqanalysis ( cfg, freqdata );
+    
+    % Removes the 'cfg' field.
+    freqdata              = rmfield ( freqdata,  'cfg' );
+    
+    % Rewrites the data as 'single' to save space.
+    freqdata.fourierspctrm = single ( freqdata.fourierspctrm );
+    
+    
+    % Writes the trial's metadata.
+    trialtype             = zeros ( numel ( erfdata.trial ), 1 );
+    trialpad              = zeros ( numel ( erfdata.trial ), 1 );
+    trialfile             = repmat ( findex,   numel ( erfdata.trial ), 1 );
+
     % Generates the trial information structure from the trial data.
     trialinfo             = [];
     trialinfo.trialdef    = trialdef;
@@ -275,12 +189,6 @@ for sindex = 1: numel ( dataset )
     for chindex = 1: numel ( config.channel.groups )
         
         channel             = config.channel.groups { chindex };
-        outname             = sprintf ( '%s/sub-%s_ses-%s_task-%s_desc-sketch_eeg.mat', current_path_trl, metadata.subject, metadata.session, metadata.task );
-        
-        if exist ( outname, 'file' ) && ~config.overwrite
-            fprintf ( 1, '  Ignoring channel group ''%s'' (already calculated).\n', channel );
-            continue
-        end
         
         if ~ismember ( channel, fieldnames ( metadata.compinfo.SOBI ) )
             fprintf ( 1, '  Ignoring channel group ''%s'' (no SOBI information).\n', channel );
@@ -311,21 +219,22 @@ for sindex = 1: numel ( dataset )
         
         % Fills the group information.
         groupinfo             = [];
-        groupinfo.subject     = metadata.subject;
-        groupinfo.session     = metadata.session;
-        groupinfo.task        = metadata.task;
-        groupinfo.stage       = metadata.stage;
-        groupinfo.channel     = channel;
-        groupinfo.fileinfo    = metadata.fileinfo;
-        groupinfo.chaninfo    = metadata.chaninfo;
-        groupinfo.artinfo     = metadata.artinfo;
-        groupinfo.compinfo    = compinfo;
-        groupinfo.trialinfo   = trialinfo;
-        groupinfo.erfdata     = grouperf;
-        groupinfo.freqdata    = groupfreq;
-        groupinfo.cleaninfo   = cleaninfo;
+        groupinfo.(channel).erfdata     = grouperf;
+        groupinfo.(channel).freqdata    = groupfreq;
+        groupinfo.(channel).trialinfo   = trialinfo;
+        groupinfo.(channel).cleaninfo   = cleaninfo;
         
-        % Saves the current group epoch data.
-        save ( '-v6', outname, '-struct', 'groupinfo' );
     end
+    
+    % Add the info
+    metadata.groupinfo = groupinfo;
+
+    % Update the history
+    metadata.history.last_step = 'Sketch Extraction';
+    metadata.history.previous_steps(end+1) = {metadata.history.last_step};
+    metadata.history.date = datestr ( now );
+    
+    % Saves the current group epoch data.
+    save ( '-v6', metadata_file, '-struct', 'metadata' );
+    
 end

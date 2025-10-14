@@ -2,21 +2,17 @@ clc
 clear
 close all
 
-% Adds the functions folders to the path.
-addpath ( '../SharedFunctions/fieldtrip-20220626/');
-addpath ( '../SharedFunctions/functions/');
-addpath ( '../SharedFunctions/mne_silent/');
-addpath ( '../SharedFunctions/functions_eep/');
+% Adds the functions folders to PATH.
+addpath(fullfile('..','SharedFunctions','functions'));
+addpath(fullfile('..','SharedFunctions','mne_silent'));
+addpath(fullfile('..','SharedFunctions','functions_eep'));
+addpath(fullfile('..','SharedFunctions','fieldtrip-20250928'));
 ft_defaults
-
-% Select user
-fid = fopen('./user.txt','r');
-user = fgetl(fid);
-fclose(fid);
+clc
 
 % Paths
-config.path.raw  = '../../databases/AI_Mind_database';
-config.path.derivatives = sprintf('../../databases/AI_Mind_database/derivatives/%s',user);
+config.path.raw  = fullfile('..','..','data','eeg','raw');
+config.path.metadata = fullfile('..','..','data','eeg','metadata');
 
 % Action when the task have already been processed.
 config.overwrite      = false;
@@ -29,7 +25,7 @@ config.equal          = false;
 config.padding        = 2;
 config.addpadd        = false;
 
-config.channel.data   = { 'EEG' };
+config.channel.data   = {'EEG' };
 config.channel.ignore = {};
 
 % Sets the filter band.
@@ -38,37 +34,33 @@ config.filter.band    = [ 2 45 ];
 % Sets the events to show (Inf for all).
 config.event          = Inf;
 
-% Lists the files.
-dataset_file = sprintf('%s/dataset_%s.mat',config.path.derivatives,user);
-dataset    = struct2array ( load ( dataset_file ) );
+% Load the metadata
+dataset_file = fullfile('..','..','data','eeg','dataset.mat');
+load ( dataset_file );
 
 % Goes through each subject and task.
-for sindex = 1: numel ( dataset )
-    
-    % Measure time
-    tStart = tic;
+for findex = 1: numel ( dataset )
     
     % Read the metadata
-    current_folder = dataset(sindex).folder;
-    current_file = dataset(sindex).file;
-    current_subject = dataset(sindex).subject;
-    current_session = dataset(sindex).session;
-    current_task = dataset(sindex).task;
+    current_folder = dataset(findex).folder;
+    current_file = dataset(findex).file;
+    current_subject = dataset(findex).subject;
+    current_session = dataset(findex).session;
+    current_task = dataset(findex).task;
     fprintf('Current file sub-%s_ses-%s_task-%s\n', current_subject,current_session,current_task);
     
     % Check if exist metadata file (mandatory)
-    current_path_trl = sprintf('%s/sub-%s/ses-%s/eeg',...
-            config.path.derivatives,current_subject,current_session);
-    metadata_file   =  sprintf ( '%s/sub-%s_ses-%s_task-%s_desc-trl_eeg.mat', current_path_trl, ...
+    filename = sprintf ('%s_%s_%s_metadata.mat',  ...
         current_subject, current_session, current_task );
+    metadata_file   = fullfile(config.path.metadata,filename);
     if ~exist(metadata_file)
         fprintf('Metadata file not created. Skip \n\n');
     end
     
     % Load metadata
     metadata = load (metadata_file);
-    dummy_path_current_file = sprintf('%s/%s',current_folder,current_file);
-
+    dummy_path_current_file = fullfile(current_folder,current_file);
+    
     % Check if overwrite
     already_processed = strcmp(metadata.history.previous_steps,'Artifact revision');
     already_processed = sum(already_processed) > 0;
@@ -82,139 +74,87 @@ for sindex = 1: numel ( dataset )
     % Gets the files length as a vector.
     headers             = [ metadata.fileinfo.header ];
     samples             = [ headers.nSamples ];
-    offsets             = cat ( 2, 0, cumsum ( samples) );
     
     % Calculates the optimal downsampling rate for the frequency band.
     downrate            = floor ( headers (1).Fs / ( 2 * config.filter.band ( end ) ) );
-    offsets             = ceil  ( offsets / downrate );
     
     % Calculates the optimal filter order from the desired padding.
     filtorder           = floor ( headers (1).Fs * config.padding );
     
+    % Gets the current epochs and artifact definitions.
+    fileinfo             = metadata.fileinfo;
+    artinfo              = metadata.artinfo;
     
-    % Reserves memory for the trialdata and the artifact definitions.
-    trialdatas          = cell ( numel ( metadata.fileinfo ), 1 );
-    events              = cell ( numel ( metadata.fileinfo ), 1 );
-    artifacts           = cell ( numel ( metadata.fileinfo ), 1 );
+    fprintf ( 1, '    Reading data from disk.\n' );
     
-    % Goes through all the data files.
-    for findex = 1: numel ( metadata.fileinfo )
-        
-        % Gets the current epochs and artifact definitions.
-        fileinfo             = metadata.fileinfo ( findex );
-        artinfo              = metadata.artinfo  ( findex );
-        dummy_path_current_file = sprintf('%s/%s',current_folder,fileinfo.file);
-        
-        fprintf ( 1, '    Reading data from disk.\n' );
-        
-        % Gets the MEG data.
-        cfg                  = [];
-        cfg.dataset          = dummy_path_current_file;
-        cfg.header           = fileinfo.header;
-        
-        wholedata            = my_read_data ( cfg );
-        
-        % Selects the channels.
-        cfg                  = [];
-        badchannels          = strcat('-',metadata.chaninfo.bad);
-        desired_channel      = cat(2,{'eeg'},badchannels);
-        cfg.channel          = desired_channel;
-        cfg.precision        = 'single';
-        cfg.feedback         = 'no';
-        
-        wholedata            = ft_preprocessing ( cfg, wholedata );
-        
-        
-        fprintf ( 1, '    Filtering the data in the band %0.0f - %0.0f Hz.\n', config.filter.band );
-        
-        % Filters and downsamples the data.
-        fir                  = fir1 ( filtorder, config.filter.band / ( wholedata.fsample / 2 ) );
-        wholedata            = myft_filtfilt ( fir, 1, wholedata );
-        wholedata            = my_downsample ( wholedata, downrate );
-        
-        
-        % Extracts the overlapping epochs for the artifact revision.
-        trialfun             = str2func ( config.trialfun );
-        
-        fileconfig           = config;
-        fileconfig.dataset   = dummy_path_current_file;
-        fileconfig.header    = wholedata.hdr;
-        fileconfig.begtime   = fileinfo.begtime;
-        fileconfig.endtime   = fileinfo.endtime;
-        fileconfig.feedback  = 'no';
-        
-        fileconfig.channel.bad = metadata.chaninfo.bad;
-        
-        fileconfig.trl       = trialfun ( fileconfig );
-        
-        trialdata            = ft_redefinetrial ( fileconfig, wholedata );
-        clear wholedata;
-        
-        % Removes the 'cfg' field.
-        trialdata            = rmfield ( trialdata, 'cfg' );
-        
-        trialdata.trial      = cellfun ( @single, trialdata.trial, 'UniformOutput', false );
-        
-        % Corrects the sample information of the trials.
-        trialdata.sampleinfo = trialdata.sampleinfo + offsets ( findex );
-        
-        % Resamples and corrects the events definitions.
-        event                = fileinfo.event (:);
-        
-        if numel ( event )
-            [ event.sample ]      = my_deal ( ceil ( [ event.sample ] / downrate ) );
-            [ event.sample ]      = my_deal ( [ event.sample ] + offsets ( findex ) );
-        end
-        
-        % Resamples and corrects the artifact definitions.
-        artifact              = artinfo.artifact;
-        arttypes              = fieldnames ( artifact );
-        
-        for aindex = 1: numel ( arttypes )
-            arttype                       = arttypes { aindex };
-            artifact.( arttype ).artifact = ceil ( artifact.( arttype ).artifact / downrate );
-            artifact.( arttype ).artifact = artifact.( arttype ).artifact + offsets ( findex );
-        end
-        
-        
-        % Stores the epoch data.
-        trialdatas  { findex } = trialdata;
-        events      { findex } = event;
-        artifacts   { findex } = artifact;
+    % Gets the MEG data.
+    cfg                  = [];
+    cfg.dataset          = dummy_path_current_file;
+    cfg.header           = fileinfo.header;
+    
+    wholedata            = my_read_data ( cfg );
+    
+    % Selects the channels.
+    cfg                  = [];
+    badchannels          = strcat('-',metadata.chaninfo.bad);
+    desired_channel      = cat(2,{'eeg'},badchannels);
+    cfg.channel          = desired_channel;
+    cfg.precision        = 'single';
+    cfg.feedback         = 'no';
+    
+    wholedata            = ft_preprocessing ( cfg, wholedata );
+    
+    
+    fprintf ( 1, '    Filtering the data in the band %0.0f - %0.0f Hz.\n', config.filter.band );
+    
+    % Filters and downsamples the data.
+    fir                  = fir1 ( filtorder, config.filter.band / ( wholedata.fsample / 2 ) );
+    wholedata            = myft_filtfilt ( fir, 1, wholedata );
+    wholedata            = my_downsample ( wholedata, downrate );
+    
+    
+    % Extracts the overlapping epochs for the artifact revision.
+    trialfun             = str2func ( config.trialfun );
+    
+    fileconfig           = config;
+    fileconfig.dataset   = dummy_path_current_file;
+    fileconfig.header    = wholedata.hdr;
+    fileconfig.begtime   = fileinfo.begtime;
+    fileconfig.endtime   = fileinfo.endtime;
+    fileconfig.feedback  = 'no';
+    
+    fileconfig.channel.bad = metadata.chaninfo.bad;
+    
+    fileconfig.trl       = trialfun ( fileconfig );
+    
+    trialdata            = ft_redefinetrial ( fileconfig, wholedata );
+    clear wholedata;
+    
+    % Removes the 'cfg' field.
+    trialdata            = rmfield ( trialdata, 'cfg' );
+    trialdata.trial      = cellfun ( @single, trialdata.trial, 'UniformOutput', false );
+    
+    % Resamples and corrects the events definitions.
+    event                = fileinfo.event (:);
+    
+    if numel ( event )
+        [ event.sample ]      = my_deal ( ceil ( [ event.sample ] / downrate ) );
     end
     
-    if all ( cellfun ( @isempty, trialdatas ) )
-        fprintf ( 1, '  No data. Ignoring.\n' );
-        continue
-    end
-    
-    fprintf ( 1, '  Merging all the data files.\n' );
-    
-    % Merges the epoch data.
-    cfg                 = [];
-    
-    trialdata           = myft_appenddata ( cfg, trialdatas {:} );
-    clear trialdatas
-    
-    % Merges the event information.
-    event               = cat ( 1, events {:} );
-    
-    % Merges the artifact definitions.
-    artifact            = [];
-    arttypes            = fieldnames ( artifacts {1} );
+    % Resamples and corrects the artifact definitions.
+    artifact              = artinfo.artifact;
+    arttypes              = fieldnames ( artifact );
     
     for aindex = 1: numel ( arttypes )
         arttype                       = arttypes { aindex };
-        dummy                         = cellfun ( @(x) x.( arttype ).artifact, artifacts, 'UniformOutput', false );
-        artifact.( arttype ).artifact = cat ( 1, dummy {:} );
+        artifact.( arttype ).artifact = ceil ( artifact.( arttype ).artifact / downrate );
     end
     
     % Removes the undesired events, if requested.
     if config.event < Inf
         event               = event ( ismember ( [ event.value ], config.event ) );
     end
-    
-    
+      
     fprintf ( 1, '  Combining the components for all channel groups.\n' );
     
     % Selects the SOBI components for the last step.
@@ -300,7 +240,7 @@ for sindex = 1: numel ( dataset )
     % Removes the artifact components.
     cfg.component       = cat ( 1, EOGcomp, EKGcomp );
     cleandata           = ft_rejectcomponent ( cfg, compdata, trialdata );
-
+    
     % Gets the list of non-MEG channels (EOG, EKG, etc.).
     MEG                 = find ( ismember ( cleandata.label', ft_channelselection ( { 'MEG' },             cleandata.label ) ) );
     MEGMAG              = find ( ismember ( cleandata.label', ft_channelselection ( { 'MEGMAG' },          cleandata.label ) ) );
@@ -352,61 +292,51 @@ for sindex = 1: numel ( dataset )
     
     cfg                 = my_databrowser ( cfg, cleandata );
     drawnow
+     
+    % Uses the full list of artifacts.
+    artifact        = cfg.artfctdef;
     
-    % Goes through all the data files.
-    for findex = 1: numel ( metadata.artinfo )
+    % Gets the previous step artifact definition.
+    artinfo         = metadata.artinfo;
+    
+    % Gets the number of previous and current samples.
+    psamples        = 0;
+    csamples        = headers.nSamples;
+    
+    % Corrects the artifact definitions.
+    arttypes = fieldnames ( artifact );
+    for aindex = 1: numel ( arttypes )
         
-        % Uses the full list of artifacts.
-        artifact        = cfg.artfctdef;
+        % Gets the list of artifacts of the current type.
+        arttype         = arttypes { aindex };
+        artifact        = cfg.artfctdef.( arttype ).artifact;
         
-        % Gets the previous step artifact definition.
-        artinfo         = metadata.artinfo ( findex );
+        % Resamples and corrects the artifact definitions.
+        artifact        = artifact * downrate;
+        artifact        = artifact - psamples;
         
-        % Gets the number of previous and current samples.
-        psamples        = sum ( [ headers( 1: findex - 1 ).nSamples ] );
-        csamples        = headers( findex ).nSamples;
+        % Removes the artifacts of previous files.
+        artifact ( artifact ( :, 2 ) < 1,        : ) = [];
         
-        % Corrects the artifact definitions.
-        arttypes = fieldnames ( artifact );
-        for aindex = 1: numel ( arttypes )
-            
-            % Gets the list of artifacts of the current type.
-            arttype         = arttypes { aindex };
-            artifact        = cfg.artfctdef.( arttype ).artifact;
-            
-            % Resamples and corrects the artifact definitions.
-            artifact        = artifact * downrate;
-            artifact        = artifact - psamples;
-            
-            % Removes the artifacts of previous files.
-            artifact ( artifact ( :, 2 ) < 1,        : ) = [];
-            
-            % Removes the artifacts of future files.
-            artifact ( artifact ( :, 1 ) > csamples, : ) = [];
-            
-            % Corrects the first and last artifact, if needed.
-            artifact        = max ( artifact, 1 );
-            artifact        = min ( artifact, csamples );
-            
-            % Stores the current artifact definition.
-            artinfo.artifact.( arttype ).artifact = artifact;
-        end
+        % Removes the artifacts of future files.
+        artifact ( artifact ( :, 1 ) > csamples, : ) = [];
         
-        % Updates the artifacts
-        metadata.artinfo ( findex ) = artinfo;
+        % Corrects the first and last artifact, if needed.
+        artifact        = max ( artifact, 1 );
+        artifact        = min ( artifact, csamples );
         
-        % Update the history
-        metadata.history.last_step = 'Artifact revision';
-        metadata.history.previous_steps(end+1) = {metadata.history.last_step};
-        metadata.history.date = datestr ( now );
+        % Stores the current artifact definition.
+        artinfo.artifact.( arttype ).artifact = artifact;
     end
     
-    % Measure time and memory
-    tEnd = toc(tStart);
-    user = memory;
-    current_step = 'artifact_revision';
-    metadata.times_seconds.(current_step) = tEnd;
-    metadata.memory_bytes.(current_step) = user.MemUsedMATLAB;
+    % Updates the artifacts
+    metadata.artinfo ( findex ) = artinfo;
+    
+    % Update the history
+    metadata.history.last_step = 'Artifact revision';
+    metadata.history.previous_steps(end+1) = {metadata.history.last_step};
+    metadata.history.date = datestr ( now );
+    
     
     % Saves the output data.
     save ( '-v6', metadata_file, '-struct', 'metadata' )
