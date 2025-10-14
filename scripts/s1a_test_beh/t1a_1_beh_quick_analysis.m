@@ -1,9 +1,9 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
-% Quick numbers for pilot
+% Quick numbers for beh pilot
 %
 % 01/10/2025
-% Federico Ramírez-Toraño
+% Federico Ramirez-Torano
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 clear
