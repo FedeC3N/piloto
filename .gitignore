@@ -1,5 +1,6 @@
 # Ignore data
 data/
+*.nii
 
 % Ignore Fieldtrip
 fieldtrip*
